@@ -1,0 +1,22 @@
+{
+  "name": "nwo-deerflow-worker",
+  "version": "0.1.0",
+  "description": "Cloudflare Worker for NWO Deer-Flow Tool #20",
+  "main": "worker/worker.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "deploy:staging": "wrangler deploy --env staging",
+    "deploy:production": "wrangler deploy --env production",
+    "tail": "wrangler tail",
+    "kv:list": "wrangler kv:key list --binding DEERFLOW_CACHE",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240512.0",
+    "typescript": "^5.4.5",
+    "wrangler": "^3.55.0"
+  },
+  "license": "MIT"
+}
