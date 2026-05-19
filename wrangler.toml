@@ -1,0 +1,42 @@
+name = "nwo-deerflow-tool20"
+main = "worker/worker.ts"
+compatibility_date = "2026-05-19"
+compatibility_flags = ["nodejs_compat"]
+
+# KV Namespaces
+[[kv_namespaces]]
+binding = "DEERFLOW_CACHE"
+id = "your-kv-namespace-id-here"
+
+# Environment Variables
+[vars]
+DEERFLOW_API_BASE = "https://your-deerflow-instance.com"
+NWO_AGENT_RUNNER_VERSION = "6.0"
+
+# Secrets (set via wrangler secret put)
+# DEERFLOW_API_KEY
+# WORKER_ENCRYPTION_KEY
+
+# Routes (optional - for custom domain)
+# [[routes]]
+# pattern = "deerflow.nwo.capital"
+# custom_domain = true
+
+# Build configuration
+[build]
+command = ""
+
+# Dev environment
+[env.dev]
+name = "nwo-deerflow-tool20-dev"
+
+[env.dev.vars]
+DEERFLOW_API_BASE = "http://localhost:8001"
+
+# Staging environment
+[env.staging]
+name = "nwo-deerflow-tool20-staging"
+
+# Production environment
+[env.production]
+name = "nwo-deerflow-tool20"
