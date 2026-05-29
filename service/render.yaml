@@ -1,0 +1,57 @@
+# =============================================================================
+# NWO Deer-Flow · execution service · Render blueprint
+# =============================================================================
+# This file lets you deploy with Render's "Blueprint" flow:
+#   1. Push this folder to a GitHub repo (or a subdir of nwo-deerflow).
+#   2. Render dashboard → New → Blueprint → connect the repo.
+#   3. Render reads this file, builds the Dockerfile, and provisions the service.
+#
+# After deploy you get a URL like:
+#   https://nwo-deerflow.onrender.com
+# Put that URL in:
+#   - worker/wrangler.toml  → DEERFLOW_API_BASE   (then `wrangler deploy`)
+#   - runner worker var     → DEERFLOW_API_BASE   (or point runner at the HA worker)
+# =============================================================================
+
+services:
+  - type: web
+    name: nwo-deerflow
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter            # free tier cold-starts; starter ($7/mo) stays warm
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      # ----------------------------------------------------------------------
+      # Optional shared secret. If set, the worker MUST send the same value as
+      # its own DEERFLOW_API_KEY secret. Leave unset (sync:false + no value) for
+      # an open service. Set in the Render dashboard, not committed here.
+      # ----------------------------------------------------------------------
+      - key: DEERFLOW_API_KEY
+        sync: false
+
+      # ----------------------------------------------------------------------
+      # Server-side fallback LM keys. Set whichever providers you want the
+      # service to use when a task arrives without its own BYOK key. You need
+      # AT LEAST ONE of these for jobs to run. Set values in the dashboard.
+      # ----------------------------------------------------------------------
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: MOONSHOT_API_KEY
+        sync: false
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: TOGETHER_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+
+      # ----------------------------------------------------------------------
+      # Sandbox mode for the real harness once wired in (local|docker|kubernetes)
+      # ----------------------------------------------------------------------
+      - key: DEERFLOW_SANDBOX_MODE
+        value: local
