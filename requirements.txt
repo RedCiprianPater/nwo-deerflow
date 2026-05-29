@@ -2,3 +2,23 @@ fastapi==0.115.5
 uvicorn[standard]==0.32.1
 httpx==0.27.2
 pydantic==2.10.3
+
+# --- DeerFlow harness (ENGINE A) -------------------------------------------
+# The service auto-detects `from deerflow.client import DeerFlowClient`.
+# Until the package is installed here, the service runs in LM-fallback mode
+# (engine: lm) and still works end-to-end. To switch to the real harness,
+# install DeerFlow into the image. It is NOT on PyPI as a slim library — it
+# ships as the bytedance/deer-flow repo. Two options:
+#
+#   1. Vendored (recommended): add the repo's backend/packages/harness as a
+#      git submodule or copy, then in the Dockerfile:
+#         RUN pip install ./harness
+#
+#   2. Direct from git (heavier; pulls LangGraph + sandbox deps):
+#         pip install "git+https://github.com/bytedance/deer-flow.git#subdirectory=backend/packages/harness"
+#
+# DeerFlow also needs its own config (`make config` in the repo) and a
+# sandbox backend. See backend/CLAUDE.md. Until that is wired, leave this
+# commented and the service stays in the working LM-fallback mode.
+#
+# deerflow @ git+https://github.com/bytedance/deer-flow.git#subdirectory=backend/packages/harness
