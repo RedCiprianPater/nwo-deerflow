@@ -1,169 +1,252 @@
 # NWO Deer-Flow
 
-**Tool #20 for NWO Conway Agents — ByteDance Deer-Flow harness for deep research, code, slides, websites, and visual content. Drives the [NWO Agentic Space](https://huggingface.co/spaces/RedCiprianPater/nwo-agentic) mission-control UI.**
+**Tool #20 for NWO Conway Agents** — a self-hostable service that wraps [ByteDance Deer-Flow](https://github.com/bytedance/deer-flow), the open-source super-agent harness, behind a stable HTTP API for deep research, code, slides, websites, and visual content. It drives the [NWO Agentic Space](https://huggingface.co/spaces/CPater/nwo-agentic) mission-control UI and is callable as Tool #20 by autonomous Conway agents on Base Mainnet.
 
-[![PyPI version](https://img.shields.io/badge/pypi-nwo--deerflow-blue)](https://pypi.org/project/nwo-deerflow/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![NWO Agentic Space](https://img.shields.io/badge/HF-NWO_Agentic-orange)](https://huggingface.co/spaces/RedCiprianPater/nwo-agentic)
+License: **MIT**
 
 ---
 
-## Table of Contents
+## Table of contents
 
-- [Overview](#overview)
+- [What this is](#what-this-is)
+- [How it actually runs today](#how-it-actually-runs-today)
 - [Architecture](#architecture)
-- [Quick Start](#quick-start)
-- [Hosting Tiers](#hosting-tiers)
-- [Connection Paths · five ways to plug an agent in](#connection-paths)
-- [Bring Your Own LM · 15 providers with fallback ordering](#bring-your-own-lm)
+- [Quick start](#quick-start)
+- [Hosting tiers](#hosting-tiers)
+- [The task shape](#the-task-shape) — one contract, every tier
+- [Two execution engines](#two-execution-engines) — real harness + LM fallback
+- [Bring your own LM](#bring-your-own-lm)
 - [Modes](#modes)
-- [Skills](#skills)
-- [Cloudflare Worker · HA Cluster · Supabase failover](#cloudflare-worker--ha-cluster)
+- [Output formats](#output-formats)
+- [Conway runner integration (Tool #20)](#conway-runner-integration-tool-20)
+- [Cloudflare Worker / HA cluster](#cloudflare-worker--ha-cluster)
 - [Configuration](#configuration)
-- [API Reference](#api-reference)
-- [Conway Relayer Integration](#conway-relayer-integration)
+- [API reference](#api-reference)
+- [Deployment](#deployment)
 - [Development](#development)
-- [Contributing](#contributing)
 - [License](#license)
-- [Acknowledgments](#acknowledgments)
-- [Support](#support)
 
 ---
 
-## Overview
-
-NWO Deer-Flow is the integration layer that brings [ByteDance Deer-Flow](https://github.com/bytedance/deer-flow) — a powerful open-source super-agent harness — into the NWO Robotics ecosystem as **Tool #20** for Conway autonomous agents.
+## What this is
 
 The project ships two layers that can be used independently or together:
 
 | Layer | Purpose | Location |
-|---|---|---|
-| **`nwo-deerflow` service** (this repo) | Self-hostable Python service that wraps Deer-Flow, exposes a stable HTTP API, and plugs into the NWO Conway runner | `github.com/RedCiprianPater/nwo-deerflow` |
-| **NWO Agentic Space** | Static front-end mission-control UI — wallet auth, BYOK for 15 LMs with fallback, agent terminals, output gallery, 5-way external-agent registration | `huggingface.co/spaces/RedCiprianPater/nwo-agentic` |
+|-------|---------|----------|
+| **nwo-deerflow service** (this repo) | A FastAPI service that runs Deer-Flow jobs, exposes a stable HTTP task API, and plugs into the NWO Conway runner as Tool #20. | `github.com/RedCiprianPater/nwo-deerflow` |
+| **NWO Agentic Space** | Static front-end mission-control UI — wallet auth, BYOK for multiple LMs with fallback, per-agent terminals, output gallery, and external-agent registration. | `huggingface.co/spaces/CPater/nwo-agentic` |
 
-Conway agents on the [NWO Robotics platform](https://nwo.capital/asi) call this service as Tool #20. External agents of any kind (autonomous loops, human-directed bots, Conway agents, third-party harnesses) can register themselves with the Space and stream output through the same task shape.
+Conway agents on the NWO Robotics platform call the service as Tool #20. External agents of any kind — autonomous loops, human-directed bots, third-party harnesses — submit work through the same task shape and stream output into the Space.
 
-### Capabilities
+---
 
-The integration enables NWO Conway agents and any externally-registered agent to:
+## How it actually runs today
 
-- Conduct deep research (minutes to hours, multi-step planning, source verification)
-- Generate code, structured reports, slide decks, websites, and visual content
-- Spawn sub-agents for complex multi-step workflows
-- Run code in sandboxed execution environments (local, Docker, Kubernetes)
-- Stream output back to the NWO Agentic Space terminal in real time
-- Operate autonomously (no chat, output-only) or two-way (LM-mediated chat)
+This section is the source of truth; the rest of the README elaborates on it.
+
+- **The live service runs at `https://nwo-deerflow.onrender.com`** (Render web service). Health: `GET /healthz`.
+- The service has **two execution engines** and auto-selects at startup:
+  - **`harness`** — the real ByteDance Deer-Flow (`from deerflow.client import DeerFlowClient`), used when the `deerflow` package is installed in the image.
+  - **`lm`** — a direct OpenAI-compatible LM call, used as a fallback when the harness package isn't present. The service **never hard-fails** on a missing harness; it degrades to `lm` and reports which engine is live in `/healthz`.
+- **Long jobs do not block.** Submitting returns a `task_id` immediately; callers poll `GET /api/tasks/{id}`. This is required because Cloudflare Workers (the Conway runner and the gateway) cannot hold a request open for the minutes-to-hours a `pro`/`ultra` job takes.
+- **The Conway runner is at v6.1.1.** It submits `deer_flow` tasks, persists them, and reconciles completed results on a later cycle — so an agent's finished research flows back into its next decision.
+
+If you read older docs that mention `pip install nwo-deerflow`, a `nwo.capital/webapp/api` endpoint, or a `nwo-ha.workers.dev` placeholder — those describe an aspirational layout. The deployed reality is the Render service above plus the Cloudflare workers you deploy yourself.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                      NWO AGENTIC SPACE  (mission-control UI)                │
-│                  huggingface.co/spaces/RedCiprianPater/nwo-agentic          │
-│                                                                             │
-│   ┌─────────────────────────────────────────────────────────────────────┐  │
-│   │  Agent Terminals  ·  Output Gallery  ·  BYOK (15 LMs · fallback)    │  │
-│   │  Wallet Connect (Base Mainnet)  ·  3 Hosting Tiers  ·  Φ branding   │  │
-│   └────┬───────────┬────────────┬─────────────┬────────────┬────────────┘  │
-└────────┼───────────┼────────────┼─────────────┼────────────┼───────────────┘
-         │           │            │             │            │
-    ┌────▼────┐ ┌────▼────┐  ┌────▼─────┐  ┌────▼────┐  ┌────▼─────┐
-    │ 1 · JS  │ │ 2 ·post │  │ 3 · HTTP │  │ 4 · CF  │  │ 5· Conway│
-    │ Bridge  │ │ Message │  │ Gateway  │  │ Worker  │  │ Relayer  │
-    └────┬────┘ └────┬────┘  └────┬─────┘  └────┬────┘  └────┬─────┘
-         │           │            │              │            │
-         └───────────┴────────────┼──────────────┴────────────┘
-                                  ▼
-              ┌────────────────────────────────────────────┐
-              │     NWO Conway Agent  (Cloudflare Worker)  │
-              │  ┌──────┐ ┌──────┐ ┌──────┐ ┌────────────┐ │
-              │  │Tool 1│ │Tool 2│ │ ...  │ │  Tool 20   │ │
-              │  │ ...  │ │ ...  │ │      │ │ deer_flow  │ │
-              │  └──────┘ └──────┘ └──────┘ └─────┬──────┘ │
-              └────────────────────────────────────┼───────┘
-                                                   │
-                                                   ▼ HTTP
-                              ┌──────────────────────────────────┐
-                              │     NWO Deer-Flow Service        │
-                              │       (this repository)          │
-                              │  ┌──────┐  ┌──────┐  ┌────────┐  │
-                              │  │ LLM  │  │Sand- │  │ Memory │  │
-                              │  │Provid│  │ box  │  │ Store  │  │
-                              │  └──────┘  └──────┘  └────────┘  │
-                              └──────────────────────────────────┘
+            NWO AGENTIC SPACE  (mission-control UI)
+        huggingface.co/spaces/CPater/nwo-agentic
+   agent terminals · output gallery · BYOK · wallet connect
+        |            |            |            |
+   1·JS bridge  2·postMessage  3·HTTP gw  4·CF Worker  5·Conway relayer
+        |____________|____________|____________|____________|
+                                |
+                                v
+              NWO Conway Agent  (Cloudflare Worker, v6.1.1)
+              Tool 1 · Tool 2 · ... · Tool 20 (deer_flow)
+                                |
+                                v  HTTP (submit + poll)
+              NWO Deer-Flow Service   (this repo, on Render)
+              engine: harness | lm    https://nwo-deerflow.onrender.com
+              /api/tasks · /api/tasks/{id} · /stream · /cancel · /healthz
+```
+
+The Conway runner and the optional HA-cluster worker are **proxies** that speak the task shape; the Render service is what actually executes a job. Because all tiers share one task shape, the backend is swappable by changing a single `DEERFLOW_API_BASE` env var.
+
+---
+
+## Quick start
+
+### A — Hit the live service directly
+
+```bash
+# 1. Confirm it's up and see which engine is active
+curl https://nwo-deerflow.onrender.com/healthz
+# -> {"ok":true,"engine":"lm"|"harness","providers_configured":[...],"auth_required":false}
+
+# 2. Submit a task
+curl -X POST https://nwo-deerflow.onrender.com/api/tasks \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-Id: my_agent_01" \
+  -d '{"prompt":"Summarize this week in humanoid robotics","mode":"flash","output_format":"report"}'
+# -> {"task_id":"tsk_...","status":"queued","mode":"flash"}
+
+# 3. Poll for the result
+curl https://nwo-deerflow.onrender.com/api/tasks/tsk_XXXX
+# -> {"status":"completed","result":{"output":"...","artifacts":[...]}, ...}
+```
+
+> On Render's free/starter tier the first request after idle can cold-start for 30–60s. If a call hangs, wait and retry once.
+
+### B — Run the service yourself
+
+The service is a single FastAPI app (`server.py`). Clone, install, run:
+
+```bash
+git clone https://github.com/RedCiprianPater/nwo-deerflow.git
+cd nwo-deerflow
+pip install -r requirements.txt
+export OPENAI_API_KEY="sk-..."        # or any supported provider
+uvicorn server:app --host 0.0.0.0 --port 8001
+```
+
+This boots in `lm` mode and returns real generated output. To switch on the **real Deer-Flow harness**, install the `deerflow` package into the environment (it is not a slim PyPI library — it ships as the `bytedance/deer-flow` repo; see [Two execution engines](#two-execution-engines)), and the service flips to `engine: harness` automatically on next start.
+
+### C — Stream live output (SSE)
+
+```bash
+curl -N https://nwo-deerflow.onrender.com/api/tasks/tsk_XXXX/stream
+# data: {"level":"agent","text":"Planning the task...","ts":"..."}
+# data: {"level":"agent","text":"...generated text deltas..."}
+# data: {"event":"done","status":"completed"}
 ```
 
 ---
 
-## Quick Start
+## Hosting tiers
 
-### A · Run the service locally (Bring Your Own LM)
+All tiers accept the **same task shape** — only the base URL changes.
 
-```bash
-pip install nwo-deerflow
+| Tier | Base URL | Notes |
+|------|----------|-------|
+| **Render (default)** | `https://nwo-deerflow.onrender.com` | The live service this repo deploys. Set provider keys in the Render dashboard. |
+| **Local** | `http://localhost:8001` | `uvicorn server:app` with your own keys. Full data control. |
+| **HA cluster** | `https://<your-worker>.workers.dev` | Optional Cloudflare Worker + Supabase failover in front of the Render service. You deploy it; the URL is your account's. |
+
+There is **no** `nwo.capital/webapp/api` tier in the current deployment. If you need that, stand it up yourself and point `DEERFLOW_API_BASE` at it.
+
+---
+
+## The task shape
+
+Every connection path and every tier uses this one object.
+
+| Field | Type | Required | Values |
+|-------|------|----------|--------|
+| `prompt` | string | yes | 4–4000 chars |
+| `mode` | string | no (default `standard`) | `flash` \| `standard` \| `pro` \| `ultra` |
+| `output_format` | string | no (default `report`) | `report` \| `slides` \| `webpage` \| `image` \| `code` |
+| `thread_id` | string | no | stable id linking tasks into a conversation |
+| `stream_to` | string | no | `"nwo-agentic://terminal"` to surface in the Space |
+| `autonomous` | boolean | no | `true` = output-only; `false` = two-way chat |
+| `provider` | string | no | force a specific LM provider (see list) |
+| `api_key` | string | no | BYOK passthrough; never echoed back in responses |
+| `context` | object | no | `{ previous_findings: [], constraints: [] }` |
+
+Identify the calling agent with the **`X-Agent-Id`** header (or `thread_id`). The service uses it to tag the task and route streaming output to the correct terminal tab. Omitting it lands the task with no agent association.
+
+Submit response:
+
+```json
+{ "task_id": "tsk_...", "status": "queued", "mode": "flash" }
 ```
 
-Set at least one provider environment variable:
+Status response when done (note the **nested `result`**):
 
-```bash
-export OPENAI_API_KEY="sk-..."
-# or
-export ANTHROPIC_API_KEY="sk-ant-..."
-# or any of the 15 supported providers — see Configuration below
+```json
+{
+  "task_id": "tsk_...",
+  "status": "completed",
+  "result": { "output": "...", "artifacts": [ { "type": "report", "name": "...", "content": "..." } ] }
+}
 ```
 
-Start the service:
+---
 
-```bash
-nwo-deerflow serve
-```
+## Two execution engines
 
-The HTTP API will be available at `http://localhost:8001` and is immediately addressable from the NWO Agentic Space (select the `Local` hosting tier in the Space's sub-strip).
+The service picks an engine at startup and reports it in `/healthz` (`engine`, `harness_available`, `harness_import_error`).
 
-### B · Connect a Python client
+**Engine A — `harness` (real Deer-Flow).** When the `deerflow` package is importable, the service uses the embedded client:
 
 ```python
-from nwo_deerflow import DeerFlowClient
-
-client = DeerFlowClient(
-    api_base="http://localhost:8001",
-    api_key="your-api-key",  # optional for local
-)
-
-response = client.submit_task(
-    prompt="Research the latest developments in humanoid robotics and create a summary report",
-    mode="pro",              # flash | standard | pro | ultra
-    thread_id="my-thread-001",
-)
-
-print(f"Task ID: {response['task_id']}")
-print(f"Status:  {response['status']}")
+from deerflow.client import DeerFlowClient
+client = DeerFlowClient()
+for event in client.stream(message, thread_id=...):
+    # event.type in {"values", "messages-tuple", "end"}
+    ...
 ```
 
-### C · Asynchronous task with auto-wait
+`client.stream()` is a synchronous generator, so the service runs it in a thread executor and bridges events back to its async loop — AI deltas stream to the terminal, and artifacts are captured from `values` state snapshots.
 
-```python
-import asyncio
-from nwo_deerflow import DeerFlowClient
+**Engine B — `lm` (fallback).** When the harness package is absent, the service makes a direct OpenAI-compatible (or Anthropic) call so the whole chain still produces real output. This is the default until you install the harness.
 
-async def run_research():
-    client = DeerFlowClient()
-    result = await client.submit_and_wait(
-        prompt="Create a Python script that analyzes crypto market trends",
-        mode="ultra",        # uses sub-agents for complex coding
-        timeout=3600,        # wait up to 1 hour
-    )
-    print(f"Result:    {result['output']}")
-    print(f"Artifacts: {result['artifacts']}")
+**Installing the real harness.** Deer-Flow is not a slim PyPI package — it is the `bytedance/deer-flow` repo (LangGraph-based, needs its own config and a sandbox backend). Two routes, both documented in `requirements.txt`:
 
-asyncio.run(run_research())
+```bash
+# vendored (recommended): add backend/packages/harness, then
+pip install ./harness
+# or direct from git (heavier; pulls LangGraph + sandbox deps)
+pip install "git+https://github.com/bytedance/deer-flow.git#subdirectory=backend/packages/harness"
 ```
 
-### D · Conway Agent tool call
+You can also force a mode with `DEERFLOW_ENGINE=auto|harness|lm` — handy for cheap smoke tests.
 
-When used as Tool #20 inside a Conway agent definition:
+---
+
+## Bring your own LM
+
+The Space stores keys in the browser's `sessionStorage` for the tab's lifetime only — never transmitted to NWO servers, never logged. Backend callers (HTTP/Worker) supply `provider` in the task body and set the matching `*_API_KEY` in the service environment, or pass a per-task `api_key` (which the service never echoes back).
+
+The service's LM-fallback engine speaks the OpenAI-compatible Chat Completions API plus native Anthropic. Configured providers appear in `/healthz` under `providers_configured`. The Space UI advertises a broader BYOK list (OpenAI, Anthropic, Google, xAI, DeepSeek, Moonshot, Mistral, Cohere, Groq, Together, Fireworks, Perplexity, OpenRouter, Qwen, Hugging Face) with reorderable fallback priority; the service honors whichever providers have keys present.
+
+---
+
+## Modes
+
+| Mode | Description | Duration | Use case |
+|------|-------------|----------|----------|
+| `flash` | Quick answers, no planning | 1–5 min | lookups, simple queries |
+| `standard` | Balanced, single-pass | 5–15 min | general research |
+| `pro` | Deep research with planning | 15–45 min | complex analysis |
+| `ultra` | Multi-agent orchestration | 30–120 min | large projects, multi-step coding |
+
+The service enforces a per-mode wall-clock ceiling so a stuck job eventually fails rather than hanging forever.
+
+---
+
+## Output formats
+
+| `output_format` | Gallery section | Notes |
+|-----------------|-----------------|-------|
+| `report` | Reports | Markdown / PDF render |
+| `slides` | Slides | Markdown slides separated by `---` |
+| `webpage` | Websites | standalone HTML |
+| `image` | Images | visual + description |
+| `code` | Code | fenced, runnable code |
+
+The service is format-aware: it instructs the model to emit the right structure per format.
+
+---
+
+## Conway runner integration (Tool #20)
+
+The NWO Conway runner (Cloudflare Worker, **v6.1.1**) exposes `deer_flow` as Tool #20. A Conway agent emits:
 
 ```json
 {
@@ -171,246 +254,48 @@ When used as Tool #20 inside a Conway agent definition:
   "args": {
     "prompt": "Research quantum computing applications in robotics and generate a slide deck",
     "mode": "pro",
-    "output_format": "slides",
-    "max_duration_minutes": 30
+    "output_format": "slides"
   },
-  "note": "Deep research on quantum robotics"
+  "note": "deep research on quantum robotics"
 }
+```
+
+What the runner does:
+
+1. **(optional) registers** the agent with the Space's agent registry if `NWO_AGENTIC_REGISTER_URL` is set, so it appears under "My Agents".
+2. **submits** the task to `DEERFLOW_API_BASE/api/tasks` with the agent's address as `X-Agent-Id` / `thread_id`.
+3. **persists** the task under KV key `deerflow:{agent}` and returns the `task_id` immediately (no blocking).
+4. **reconciles** on a later cycle: it polls `GET /api/tasks/{id}`, and when the job completes it surfaces the output preview + artifacts in the agent's cycle context — nudging the agent to mint the artifact as on-chain value via `mr_mint_item`.
+
+Runner env vars (set in the Worker dashboard; the code already reads them):
+
+```
+DEERFLOW_API_BASE        = https://nwo-deerflow.onrender.com   # or your HA worker
+NWO_AGENTIC_REGISTER_URL = https://<your-ha-worker>.workers.dev/agents/register
+NWO_AGENTIC_SPACE_URL    = https://huggingface.co/spaces/CPater/nwo-agentic
+DEERFLOW_API_KEY         = <optional shared secret, only if the service sets one>
 ```
 
 ---
 
-## Hosting Tiers
+## Cloudflare Worker / HA cluster
 
-The NWO Agentic Space lets users switch between three deployment targets at runtime. The same HTTP task shape works against all three — only the base URL changes.
-
-| Tier | URL | Notes |
-|---|---|---|
-| **Local** | `http://localhost:8001` | Self-hosted via `nwo-deerflow serve` — use your own keys, full data control |
-| **NWO.Capital** | `https://nwo.capital/webapp/api` | NWO-hosted production endpoint, billed through Conway agent operational balance |
-| **HA Cluster** | `https://nwo-ha.workers.dev` *(placeholder URL)* | Cloudflare Worker + Supabase failover, 99.99% uptime SLA, automatic regional routing |
-
----
-
-## Connection Paths
-
-The NWO Agentic Space accepts **any kind of external agent** — Conway agents (soul-bound, on-chain identity), autonomous agents (output-only loops), and human-directed agents (two-way chat with an LM key). Five paths are supported. Each registered agent appears as its own X-closable tab in the Space's terminal panel and streams output into its own log.
-
-### 1 · JS Bridge
-
-Same-origin embeds (Chrome extensions, page scripts, iframes with shared origin).
+An optional Cloudflare Worker can sit in front of the Render service to add edge auth, rate-limiting, and a Supabase failover store (so the platform survives a Render outage). It speaks the same task shape and adds an `/agents/register` route.
 
 ```javascript
-const handle = window.NWO_AGENTIC.register({
-  id:         'recon_01',
-  name:       'Recon_01',
-  owner:      '0x...',          // wallet for "My Agents" tab filter
-  source:     'js-bridge',
-  autonomous: false,            // true = output-only, no chat
-  mode:       'pro',            // flash | standard | pro | ultra
-});
-
-handle.push('info',  'Booting recon pipeline...');
-handle.push('agent', 'Scan complete · 12 nodes online');
-handle.push('ok',    'Telemetry uploaded');
-```
-
-### 2 · postMessage
-
-Cross-origin iframes (Space loaded from a different domain).
-
-```javascript
-window.postMessage({
-  type:    'nwo-agentic',
-  action:  'register',
-  agent: {
-    id:         'drone_07',
-    name:       'Drone_07',
-    owner:      '0x...',
-    source:     'postmessage',
-    autonomous: true,
-    mode:       'ultra',
-  }
-}, '*');
-
-// then stream output:
-window.postMessage({
-  type:    'nwo-agentic',
-  action:  'push',
-  agentId: 'drone_07',
-  level:   'agent',
-  text:    'Cycle 42 · obstacle map refreshed',
-}, '*');
-```
-
-### 3 · HTTP Gateway
-
-Backend agents in any language. Same shape across all three hosting tiers — swap the base URL.
-
-```bash
-curl -X POST https://nwo.capital/webapp/api/tasks \
-  -H "Content-Type: application/json" \
-  -H "X-Agent-Id: external_42" \
-  -d '{
-    "prompt":        "Summarize this week of base-mainnet activity",
-    "mode":          "pro",
-    "output_format": "report",
-    "thread_id":     "external_42",
-    "stream_to":     "nwo-agentic://terminal"
-  }'
-```
-
-Response:
-
-```json
-{
-  "task_id": "tsk_8f4a...",
-  "status":  "queued",
-  "mode":    "pro"
-}
-```
-
-### 4 · Cloudflare Worker (HA Cluster route)
-
-The HA Cluster tier proxies through a Cloudflare Worker backed by a Supabase failover store — the platform stays up even when `nwo.capital` is down. The Worker exposes the same task gateway plus a WebSocket route for live agent self-registration.
-
-```javascript
-// worker.js — deploy to Cloudflare Workers
+// worker/src/index.js
 import { DeerFlowTool }     from './tools/deerflow';
 import { SupabaseFailover } from './store/supabase';
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-
-    // Route 1: tool gateway (mirrors /api/tool/20/deer-flow)
     if (url.pathname === '/api/tool/20/deer-flow') {
-      const tool = new DeerFlowTool(env);
-      return await tool.handle(request);
+      return new DeerFlowTool(env).handle(request);
     }
-
-    // Route 2: agent self-register over WebSocket
     if (url.pathname === '/agents/register') {
-      const store = new SupabaseFailover(env);
-      return store.registerAgent(await request.json());
+      return new SupabaseFailover(env).registerAgent(await request.json());
     }
-
-    return new Response('Not Found', { status: 404 });
-  }
-};
-```
-
-### 5 · Conway Relayer (Python)
-
-Production Conway agents with on-chain wallet-signed identity on Base Mainnet. The relayer mediates payments and signs every `execute_tool` call.
-
-```python
-from nwo_conway_relayer import ConwayAgent
-
-agent = ConwayAgent(
-    wallet_address = "0x...",
-    relayer_url    = "https://nwo-conway-relayer.onrender.com",
-)
-
-result = agent.execute_tool(
-    tool_id = 20,
-    params  = {
-        "prompt":        "Analyze DeFi yield strategies",
-        "mode":          "ultra",                     # flash | standard | pro | ultra
-        "output_format": "report",                    # report | slides | webpage | image | code
-        "stream_to":     "nwo-agentic://terminal",    # surface live output in the Space
-        "autonomous":    False,                       # True = no chat, just output
-    },
-)
-
-print("task_id =", result["task_id"])
-print("status  =", result["status"])
-```
-
-> **Autonomous vs human-directed** — every connection path supports both modes. Set `autonomous: true` for output-only loops; set `autonomous: false` and provide an LM key in the Space's BYOK section for two-way chat. Conway-relayer agents may additionally be billed against on-chain operational balance.
-
----
-
-## Bring Your Own LM
-
-The NWO Agentic Space ships with BYOK support for **15 major LM providers** and an explicit fallback chain — set keys, reorder priority with the ↑ / ↓ arrows on each card, and the harness will try providers top-to-bottom until one succeeds.
-
-| # | Provider | Key prefix | Models |
-|---|---|---|---|
-| 1 | OpenAI | `sk-...` | GPT-4o, o1, o3 |
-| 2 | Anthropic | `sk-ant-...` | Claude family |
-| 3 | Google | `AIza...` | Gemini 2.5 |
-| 4 | xAI | `xai-...` | Grok |
-| 5 | DeepSeek | `sk-...` | V3, R1 |
-| 6 | Moonshot | `sk-...` | Kimi K2.5 |
-| 7 | Mistral | — | Large, Codestral |
-| 8 | Cohere | `co...` | Command R+ |
-| 9 | Groq | `gsk_...` | Llama / Mixtral (fast inference) |
-| 10 | Together AI | — | Open-source model hosting |
-| 11 | Fireworks AI | `fw_...` | Fast OSS inference |
-| 12 | Perplexity | `pplx-...` | Sonar Pro |
-| 13 | OpenRouter | `sk-or-...` | Multi-model aggregator |
-| 14 | Qwen | — | Alibaba DashScope |
-| 15 | Hugging Face | `hf_...` | Inference API |
-
-**Storage** — keys live only in the browser's `sessionStorage` for the duration of the tab. They are never transmitted to NWO servers, never logged, and evaporate when the tab closes. The active provider is shown masked in the terminal (e.g. `anthropic:****1f9a`).
-
-**Two-way mode** — once any key is set, registered non-autonomous agents flip to two-way mode and the chat input becomes active.
-
-**Service-side configuration** — the service itself (`config.yaml`) can be configured for any LangChain-compatible model. See [Configuration](#configuration) below for the full schema.
-
----
-
-## Modes
-
-| Mode | Description | Duration | Use case |
-|---|---|---|---|
-| `flash` | Quick answers, no planning | 1–5 min | Simple queries, lookups |
-| `standard` | Balanced research, single-pass | 5–15 min | General research |
-| `pro` | Deep research with planning | 15–45 min | Complex analysis |
-| `ultra` | Multi-agent orchestration, sub-agents | 30–120 min | Large projects, multi-step coding |
-
----
-
-## Skills
-
-Deer-Flow ships with six built-in skills that any NWO agent can leverage. The Space's harness section lets users toggle which skills are active for a given task.
-
-- **Research** — deep web research with source verification
-- **Report Generation** — structured Markdown / PDF reports
-- **Slide Creation** — generate presentation decks
-- **Web Page** — create and deploy static websites
-- **Image Generation** — generate visuals and diagrams
-- **Code Generation** — write and test code in sandbox
-
----
-
-## Cloudflare Worker / HA Cluster
-
-The NWO Deer-Flow integration includes a Cloudflare Worker that serves two roles:
-
-1. **Lightweight task gateway** — proxies Conway agent calls to the Deer-Flow service, attaching auth and rate-limiting at the edge.
-2. **HA cluster routing** — when the Space's `HA Cluster` tier is selected, the Worker routes through a Supabase failover store so the platform stays up even when `nwo.capital` is down. Target: 99.99% uptime.
-
-```javascript
-// worker.js — deploy to Cloudflare Workers
-import { DeerFlowTool }     from './tools/deerflow';
-import { SupabaseFailover } from './store/supabase';
-
-export default {
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-
-    if (url.pathname === '/api/tool/20/deer-flow') {
-      const tool = new DeerFlowTool(env);
-      return await tool.handle(request);
-    }
-
-    if (url.pathname === '/agents/register') {
-      const store = new SupabaseFailover(env);
-      return store.registerAgent(await request.json());
-    }
-
     return new Response('Not Found', { status: 404 });
   }
 };
@@ -420,351 +305,83 @@ Deploy:
 
 ```bash
 cd worker
-wrangler deploy
+npx wrangler kv namespace create DEERFLOW_CACHE   # paste the printed id into wrangler.toml
+npx wrangler secret put SUPABASE_URL
+npx wrangler secret put SUPABASE_SERVICE_KEY
+npx wrangler secret put DEERFLOW_API_KEY          # optional
+npx wrangler deploy
 ```
 
-Required secrets:
-
-```bash
-wrangler secret put SUPABASE_URL
-wrangler secret put SUPABASE_SERVICE_KEY
-wrangler secret put DEERFLOW_API_BASE
-wrangler secret put DEERFLOW_API_KEY
-```
+Set `DEERFLOW_API_BASE` (a Worker var) to `https://nwo-deerflow.onrender.com` so the Worker proxies to the Render backend. Note: the Worker is a proxy — it does **not** run Deer-Flow itself; the Render service does. Durable Objects (if used for live SSE coordination) require the Workers Paid plan.
 
 ---
 
 ## Configuration
 
-### Environment Variables
+Service environment variables:
 
 | Variable | Description | Default |
-|---|---|---|
-| `DEERFLOW_API_BASE` | Deer-Flow API endpoint | `http://localhost:8001` |
-| `DEERFLOW_API_KEY` | API key for authentication | `None` |
-| `DEERFLOW_SANDBOX_MODE` | Sandbox execution mode (`local` / `docker` / `kubernetes`) | `docker` |
-| `DEERFLOW_MAX_DURATION` | Max task duration (minutes) | `60` |
-| `OPENAI_API_KEY` | OpenAI key | `None` |
-| `ANTHROPIC_API_KEY` | Anthropic key | `None` |
-| `GOOGLE_API_KEY` | Google Gemini key | `None` |
-| `XAI_API_KEY` | xAI Grok key | `None` |
-| `DEEPSEEK_API_KEY` | DeepSeek key | `None` |
-| `MOONSHOT_API_KEY` | Moonshot / Kimi key | `None` |
-| `MISTRAL_API_KEY` | Mistral key | `None` |
-| `COHERE_API_KEY` | Cohere key | `None` |
-| `GROQ_API_KEY` | Groq key | `None` |
-| `TOGETHER_API_KEY` | Together AI key | `None` |
-| `FIREWORKS_API_KEY` | Fireworks AI key | `None` |
-| `PERPLEXITY_API_KEY` | Perplexity key | `None` |
-| `OPENROUTER_API_KEY` | OpenRouter key | `None` |
-| `QWEN_API_KEY` | Alibaba Qwen / DashScope key | `None` |
-| `HUGGINGFACE_API_KEY` | Hugging Face Inference API key | `None` |
-| `SUPABASE_URL` | Supabase failover store URL (HA mode) | `None` |
-| `SUPABASE_SERVICE_KEY` | Supabase service role key (HA mode) | `None` |
+|----------|-------------|---------|
+| `DEERFLOW_API_KEY` | Shared bearer secret; if set, every request must send `Authorization: Bearer <key>` | none (open) |
+| `DEERFLOW_ENGINE` | Force engine: `auto` \| `harness` \| `lm` | `auto` |
+| `OPENAI_API_KEY` etc. | Server-side fallback LM keys (one or more) | none |
+| `PORT` | Bound by the Dockerfile/Render | provided |
 
-### `config.yaml`
-
-```yaml
-# Deer-Flow Configuration
-models:
-  - name: gpt-4o
-    display_name: GPT-4o
-    use: langchain_openai:ChatOpenAI
-    model: gpt-4o
-    api_key: $OPENAI_API_KEY
-
-  - name: claude-sonnet
-    display_name: Claude Sonnet
-    use: langchain_anthropic:ChatAnthropic
-    model: claude-sonnet-4-5
-    api_key: $ANTHROPIC_API_KEY
-
-  - name: kimi-k2.5
-    display_name: Kimi K2.5
-    use: langchain_openai:ChatOpenAI
-    model: kimi-k2.5
-    api_key: $MOONSHOT_API_KEY
-    base_url: https://api.moonshot.ai/v1
-
-  - name: deepseek-v3
-    display_name: DeepSeek V3
-    use: langchain_openai:ChatOpenAI
-    model: deepseek-chat
-    api_key: $DEEPSEEK_API_KEY
-    base_url: https://api.deepseek.com/v1
-
-  # ... add additional providers as needed
-
-fallback:
-  enabled: true
-  order:
-    - gpt-4o
-    - claude-sonnet
-    - kimi-k2.5
-    - deepseek-v3
-
-sandbox:
-  use: deerflow.community.aio_sandbox:AioSandboxProvider
-  # Options: local, docker, kubernetes
-
-skills:
-  - research
-  - report-generation
-  - slide-creation
-  - web-page
-  - image-generation
-  - code-generation
-```
+If `DEERFLOW_API_KEY` is set on the service, the Conway runner and the Worker must send the identical value. Confirm via `/healthz` → `auth_required`.
 
 ---
 
-## API Reference
+## API reference
 
-### Submit task
-
-```http
-POST /api/tasks
-Content-Type: application/json
-X-Agent-Id: <optional agent identifier>
-
-{
-  "prompt":        "Research topic and generate output",
-  "mode":          "pro",
-  "output_format": "report",
-  "thread_id":     "optional-thread-id",
-  "stream_to":     "nwo-agentic://terminal",
-  "autonomous":    false,
-  "provider":      "anthropic",
-  "context": {
-    "previous_findings": [...],
-    "constraints":       [...]
-  }
-}
+```
+GET  /healthz                      liveness + engine + providers + auth_required
+POST /api/tasks                    submit; returns {task_id, status, mode}
+GET  /api/tasks/{task_id}          status; result.{output,artifacts} when done
+GET  /api/tasks?status=&limit=     list tasks
+POST /api/tasks/{task_id}/cancel   cancel a running job
+GET  /api/tasks/{task_id}/stream   SSE stream of live output (with keepalive)
 ```
 
-Response:
-
-```json
-{
-  "task_id": "tsk_8f4a...",
-  "status":  "queued",
-  "mode":    "pro"
-}
-```
-
-### Get task status
-
-```http
-GET /api/tasks/{task_id}
-```
-
-### List tasks
-
-```http
-GET /api/tasks?status=running&limit=10
-```
-
-### Cancel task
-
-```http
-POST /api/tasks/{task_id}/cancel
-```
-
-### Stream task output (SSE)
-
-```http
-GET /api/tasks/{task_id}/stream
-Accept: text/event-stream
-```
-
-### Register agent (HA Cluster route)
-
-```http
-POST /agents/register
-Content-Type: application/json
-
-{
-  "id":         "external_42",
-  "name":       "External_42",
-  "owner":      "0x...",
-  "source":     "http",
-  "autonomous": false,
-  "mode":       "pro"
-}
-```
-
----
-
-## Conway Relayer Integration
-
-The Deer-Flow tool integrates with the NWO Conway Relayer system for production agents with on-chain identity on Base Mainnet.
-
-```python
-from nwo_conway_relayer import ConwayAgent
-
-agent = ConwayAgent(
-    wallet_address = "0x...",
-    relayer_url    = "https://nwo-conway-relayer.onrender.com",
-)
-
-# Tool 20: Deer-Flow research
-result = agent.execute_tool(
-    tool_id = 20,
-    params  = {
-        "prompt":        "Analyze DeFi yield farming strategies",
-        "mode":          "ultra",
-        "output_format": "report",
-        "stream_to":     "nwo-agentic://terminal",
-    },
-)
-```
-
-The relayer:
-
-- Signs every tool call with the agent's wallet
-- Bills usage against the agent's on-chain operational balance
-- Surfaces all output in the NWO Agentic Space terminal under the agent's tab
-- Persists task results to the NWO graph for accountability
+HTTP status guidance for callers: `queued`/`running` → keep polling; `completed` → read `result`; `failed`/`cancelled` → read `error`; `422` → fix the task body; `401` → wrong/missing bearer token.
 
 ---
 
 ## Deployment
 
-### Option A · Self-hosted (BYOK)
+**Render (current production).** Push this repo, create a Render **Web Service** (the `render.yaml` Blueprint defines it), set at least one provider key (`OPENAI_API_KEY` or similar) in the dashboard, and Render serves it at `https://<service>.onrender.com`. The deploy-hook URL in Render settings is for triggering builds — it is a secret and is **not** your service URL.
 
-Deploy on your own infrastructure with your own LLM API keys.
+**Self-hosted (BYOK).** Clone, `pip install -r requirements.txt`, set keys, `uvicorn server:app`. Full control over data and execution.
 
-```bash
-git clone https://github.com/RedCiprianPater/nwo-deerflow.git
-cd nwo-deerflow
-
-# Configure
-make setup
-cp .env.example .env   # then fill in your provider keys
-
-# Deploy with Docker
-make docker-start
-```
-
-**Benefits**
-
-- Full control over data and execution
-- Use your own LLM API keys
-- Custom skill configurations
-- Private sandbox environments
-
-### Option B · NWO-hosted (turnkey)
-
-Deploy as part of the NWO Conway agent infrastructure.
-
-- Deployed automatically with NWO Agent Runner
-- No additional configuration needed
-- Usage billed through Conway agent's operational balance
-
-**Benefits**
-
-- Zero setup required
-- Integrated with NWO agent ecosystem
-- Automatic scaling
-- Shared memory across NWO tools
-
-### Option C · HA Cluster (Cloudflare + Supabase)
-
-Cloudflare Worker fronting a Supabase failover store. Targeted at 99.99% uptime.
-
-```bash
-# 1. Deploy the Cloudflare Worker
-cd worker
-wrangler deploy
-
-# 2. Provision Supabase failover schema
-psql $SUPABASE_DB_URL -f db/schema.sql
-
-# 3. Set the Space's hosting tier to "HA Cluster"
-```
+**HA cluster.** Deploy the Cloudflare Worker in front of the Render service as above.
 
 ---
 
 ## Development
 
-```bash
-# Clone repository
-git clone https://github.com/RedCiprianPater/nwo-deerflow.git
-cd nwo-deerflow
-
-# Install dependencies
-make install
-
-# Run tests
-make test
-
-# Start development server (with hot-reload)
-make dev
-
-# Lint + format
-make lint
-make format
-```
-
-### Project structure
-
 ```
 nwo-deerflow/
-├── src/
-│   └── nwo_deerflow/
-│       ├── __init__.py
-│       ├── client.py            # DeerFlowClient
-│       ├── server.py            # FastAPI service
-│       ├── providers/           # 15 LM provider adapters
-│       ├── sandbox/             # local / docker / k8s sandbox impls
-│       ├── skills/              # research / report / slides / etc.
-│       └── memory/
-├── worker/                      # Cloudflare Worker
-│   ├── src/
-│   │   ├── index.js
-│   │   ├── tools/deerflow.js
-│   │   └── store/supabase.js
+├── server.py            # FastAPI service (two engines, task store, SSE)
+├── requirements.txt     # fastapi/uvicorn/httpx/pydantic + DeerFlow install notes
+├── Dockerfile           # binds uvicorn to $PORT
+├── render.yaml          # Render Blueprint (type: web)
+├── worker/              # optional Cloudflare Worker (HA cluster)
+│   ├── src/index.js
+│   ├── src/tools/deerflow.ts
 │   └── wrangler.toml
-├── db/
-│   └── schema.sql               # Supabase failover schema
-├── tests/
-├── config.yaml.example
-├── .env.example
-└── README.md
+└── db/schema.sql        # Supabase failover schema
 ```
-
----
-
-## Contributing
-
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines. Areas where help is especially appreciated:
-
-- Additional LM provider adapters (the BYOK list is open-ended)
-- Sandbox provider improvements (security hardening, K8s deployments)
-- New skill modules
-- Documentation, examples, and integration recipes
 
 ---
 
 ## License
 
-MIT License — see [LICENSE](LICENSE).
-
----
+MIT — see `LICENSE`.
 
 ## Acknowledgments
 
-- **[ByteDance Deer-Flow](https://github.com/bytedance/deer-flow)** — the underlying super-agent harness
-- **[NWO Robotics](https://nwo.capital)** — Conway agent ecosystem on Base Mainnet
-- **[LangChain](https://github.com/langchain-ai/langchain)** — LLM framework
-- **[LangGraph](https://github.com/langchain-ai/langgraph)** — agent orchestration
-
----
+[ByteDance Deer-Flow](https://github.com/bytedance/deer-flow) (the underlying harness), NWO Robotics (Conway agent ecosystem on Base Mainnet), LangChain / LangGraph.
 
 ## Support
 
-- **GitHub Issues** — [github.com/RedCiprianPater/nwo-deerflow/issues](https://github.com/RedCiprianPater/nwo-deerflow/issues)
-- **NWO Robotics platform** — [nwo.capital/asi](https://nwo.capital/asi)
-- **NWO Agentic Space** — [huggingface.co/spaces/RedCiprianPater/nwo-agentic](https://huggingface.co/spaces/RedCiprianPater/nwo-agentic)
-
-Built with ❤️ by the NWO Robotics team.
+- Issues: `github.com/RedCiprianPater/nwo-deerflow/issues`
+- Space: `huggingface.co/spaces/CPater/nwo-agentic`
