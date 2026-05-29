@@ -10,7 +10,7 @@ id = "your-kv-namespace-id-here"
 
 # Environment Variables
 [vars]
-DEERFLOW_API_BASE = "https://your-deerflow-instance.com"
+DEERFLOW_API_BASE = "https://nwo-deerflow.onrender.com"
 NWO_AGENT_RUNNER_VERSION = "6.0"
 
 # Secrets (set via wrangler secret put)
@@ -31,7 +31,7 @@ command = ""
 name = "nwo-deerflow-tool20-dev"
 
 [env.dev.vars]
-DEERFLOW_API_BASE = "http://localhost:8001"
+DEERFLOW_API_BASE = "https://nwo-deerflow.onrender.com"
 
 # Staging environment
 [env.staging]
